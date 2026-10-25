@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Transaction } from 'bitcoinjs-lib';
-import { payoutAt, type OptionTerms } from '../src/ducat-option';
+import { constructOptionLeaf, payoutAt, type OptionTerms } from '../src/ducat-option';
+import { BIP341_NUMS_XONLY, constructTwoLeafOptionVault } from '../src/ducat-option-vault-tree';
 import { preflightOptionCets, type OptionCetBundle } from '../src/ducat-option-cet-policy';
 
 const terms:OptionTerms = {
@@ -14,6 +15,7 @@ const terms:OptionTerms = {
 // Deterministic known-secret test keys. NEVER use as funded Bitcoin keys.
 const secp = require('secp256k1') as {
   publicKeyCreate: (privateKey: Uint8Array, compressed?: boolean) => Uint8Array;
+  publicKeyTweakAdd: (point: Uint8Array, scalar: Uint8Array, compressed?: boolean) => Uint8Array;
 };
 function spk(lastByte: number): string {
   const key = Buffer.alloc(32);
@@ -27,6 +29,28 @@ const payoutScripts = {
   callHolder: spk(4),
 };
 const bondOutpoint = 'b'.repeat(64)+':1';
+const witness = '0'.repeat(63) + '5'; // Public deterministic witness, test-only
+const internalKey = Buffer.from(secp.publicKeyTweakAdd(
+  Buffer.from('02'+BIP341_NUMS_XONLY, 'hex'),
+  Buffer.from(witness, 'hex'), true,
+)).subarray(1).toString('hex');
+const borrowerKey = spk(10).slice(4);
+const guardianKey = spk(11).slice(4);
+const writerKey = spk(12).slice(4);
+const proposedTree = {
+  internalKeyXOnly: internalKey,
+  numsBlindingScalarHex: witness,
+  ducatCosignScriptHex:'20'+borrowerKey+'ad20'+guardianKey+'ac',
+  optionScriptHex:constructOptionLeaf(borrowerKey,guardianKey,writerKey).scriptHex,
+  expectedBorrowerXOnly:borrowerKey,
+  expectedGuardianXOnly:guardianKey,
+};
+const tree = constructTwoLeafOptionVault(proposedTree);
+const observedTree = {
+  scriptPubKeyHex:tree.scriptPubKeyHex,
+  cosignControlBlockHex:tree.cosignControlBlockHex,
+  optionControlBlockHex:tree.optionControlBlockHex,
+};
 function buildOne(price:string, mods?:{
   changeRecipient?:boolean;swapInputs?:boolean;locktime?:number;
   overpay?:boolean;addOutput?:boolean;badSequence?:boolean;
@@ -58,7 +82,8 @@ function buildOne(price:string, mods?:{
 function bundle():OptionCetBundle {
   return {
     terms,writerBondOutpoint:bondOutpoint,
-    vaultPrevoutScriptPubKeyHex:spk(5),
+    proposedTree:{...proposedTree}, observedTree:{...observedTree},
+    vaultPrevoutScriptPubKeyHex:tree.scriptPubKeyHex,
     writerBondPrevoutScriptPubKeyHex:spk(6),
     payoutScripts:{...payoutScripts},
     candidates:terms.oracleOutcomesUsdCents.map(price=>buildOne(price)),
@@ -111,6 +136,23 @@ describe('Ducat option CET output allocation preflight',()=>{
     expect(preflightOptionCets(b).problems.join(' ')).toMatch(/cannot share/u);
     const c=bundle();c.vaultPrevoutScriptPubKeyHex='0014'+'f'.repeat(40);
     expect(preflightOptionCets(c).problems.join(' ')).toMatch(/P2TR/u);
+  });
+  it('rejects unsigned CETs without an independently derived NUMS key',()=>{
+    const b=bundle();
+    b.proposedTree.numsBlindingScalarHex=undefined;
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/NUMS internal-key witness/u);
+  });
+  it('rejects an added unauthorized leaf or altered tree commitment',()=>{
+    const b=bundle();
+    b.observedTree.optionControlBlockHex='c0'+'a'.repeat(128);
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/tree commitment mismatch/u);
+    const c=bundle();
+    c.vaultPrevoutScriptPubKeyHex=spk(5);
+    expect(preflightOptionCets(c).problems.join(' ')).toMatch(/differs from reviewed option tree/u);
+  });
+  it('rejects a non-curve Taproot destination',()=>{
+    const b=bundle(); b.payoutScripts.lender='5120'+'1'.repeat(64);
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/invalid x-only secp256k1/u);
   });
   it('updates the review digest when a legitimate recipient changes',()=>{
     const b=bundle();
