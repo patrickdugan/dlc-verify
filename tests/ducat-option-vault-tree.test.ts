@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { constructOptionLeaf } from '../src/ducat-option';
 import {
-  constructTwoLeafOptionVault, verifyTwoLeafOptionVault,
+  BIP341_NUMS_XONLY, constructTwoLeafOptionVault, verifyTwoLeafOptionVault, verifyNumsDerivation,
   type OptionVaultProposal,
 } from '../src/ducat-option-vault-tree';
 
@@ -108,6 +109,40 @@ describe('Ducat Taproot two-leaf option vault preflight (read only)', () => {
     expect(() => constructTwoLeafOptionVault({
       ...proposal(), optionScriptHex: constructOptionLeaf(guardian, borrower, writer).scriptHex,
     })).toThrow(/borrower differs/u);
+  });
+
+
+  it('pins the BIP341 NUMS construction to SHA256(uncompressed G)', () => {
+    const sec = Buffer.alloc(32);
+    sec[31] = 1;
+    const point = Buffer.from(secp.publicKeyCreate(sec, false));
+    expect(createHash('sha256').update(point).digest('hex')).toBe(BIP341_NUMS_XONLY);
+  });
+
+  it('verifies a blinded NUMS internal key with a revealed scalar', () => {
+    const native = require('secp256k1') as {
+      publicKeyTweakAdd: (point: Uint8Array, tweak: Uint8Array, compressed?: boolean) => Uint8Array;
+    };
+    const r = '0'.repeat(63) + '5'; // public test scalar, never use for funds
+    const internal = Buffer.from(native.publicKeyTweakAdd(
+      Buffer.from('02' + BIP341_NUMS_XONLY, 'hex'),
+      Buffer.from(r, 'hex'), true,
+    )).subarray(1).toString('hex');
+    expect(verifyNumsDerivation(internal, r)).toBe(true);
+    const manifest = constructTwoLeafOptionVault({
+      ...proposal(), internalKeyXOnly: internal, numsBlindingScalarHex: r,
+    });
+    expect(manifest.keyPathSpendability).toBe('nums-derived');
+    expect(manifest.scriptPubKeyHex).toMatch(/^5120[0-9a-f]{64}$/u);
+    expect(verifyNumsDerivation(internal, '0'.repeat(64))).toBe(false);
+    expect(verifyNumsDerivation(internal, 'f'.repeat(64))).toBe(false);
+    expect(verifyNumsDerivation(internal, '0'.repeat(63) + '6')).toBe(false);
+  });
+
+  it('fails closed if the asserted NUMS witness cannot produce the internal key', () => {
+    expect(() => constructTwoLeafOptionVault({
+      ...proposal(), numsBlindingScalarHex: '0'.repeat(63) + '5',
+    })).toThrow(/fails the claimed BIP341 NUMS derivation/u);
   });
 
   it('rejects unknown internal key-path safety even after a valid tree match', () => {
