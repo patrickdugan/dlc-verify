@@ -25,10 +25,15 @@ const XONLY = /^[0-9a-f]{64}$/u;
 const CANONICAL_DUCAT_COSIGN = /^20([0-9a-f]{64})ad20([0-9a-f]{64})ac$/u;
 const CURVE_ORDER = BigInt('0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141');
 const TAPROOT_LEAF_VERSION = 0xc0;
+/** BIP341's publicly specified Nothing-Up-My-Sleeve x-coordinate. */
+export const BIP341_NUMS_XONLY = '50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0';
+
 
 export type OptionVaultProposal = {
   /** x-only key used to derive the tweaked Taproot output. */
   internalKeyXOnly: string;
+  /** Reveal a BIP341 NUMS blinding scalar r; the internal key must equal x(H+rG). */
+  numsBlindingScalarHex?: string;
   /** Exact current Ducat cosign shape without the optional Ord envelope. */
   ducatCosignScriptHex: string;
   /** Exact option leaf exported by constructOptionLeaf. */
@@ -50,7 +55,7 @@ export type FullTwoLeafManifest = {
   cosignControlBlockHex: string;
   optionControlBlockHex: string;
   // x-only internal key ownership cannot be derived from its 32-byte value.
-  keyPathSpendability: 'unproven';
+  keyPathSpendability: 'unproven' | 'nums-derived';
   // Taproot alone does not enforce the contingent outputs of a DLC.
   cetEnforcement: 'unimplemented';
 };
@@ -77,9 +82,34 @@ function branch(a: Buffer, b: Buffer): Buffer {
   return taggedHash('TapBranch', Buffer.concat(parts));
 }
 
+/**
+ * Verify a NUMS witness against the BIP341 construction x(H+rG).
+ * This establishes a publicly reviewable derivation from the documented
+ * NUMS point under the elliptic-curve discrete-log assumption. It does not
+ * constitute an absolute mathematical proof of unknown discrete log.
+ */
+export function verifyNumsDerivation(internalKeyXOnly: string, scalarHex: string): boolean {
+  if (!XONLY.test(internalKeyXOnly) || !XONLY.test(scalarHex)) return false;
+  const scalar = BigInt('0x' + scalarHex);
+  if (scalar === 0n || scalar >= CURVE_ORDER) return false;
+  try {
+    const blinded = Buffer.from(secp.publicKeyTweakAdd(
+      Buffer.from('02' + BIP341_NUMS_XONLY, 'hex'),
+      Buffer.from(scalarHex, 'hex'), true,
+    ));
+    return blinded.length === 33 && blinded.subarray(1).toString('hex') === internalKeyXOnly;
+  } catch {
+    return false;
+  }
+}
+
 /** Rebuild a proposed output with exactly the explicitly listed two scripts. */
 export function constructTwoLeafOptionVault(p: OptionVaultProposal): FullTwoLeafManifest {
   const inner = pubkey(p.internalKeyXOnly, 'internal key');
+  if (p.numsBlindingScalarHex !== undefined &&
+      !verifyNumsDerivation(p.internalKeyXOnly, p.numsBlindingScalarHex)) {
+    throw Error('internal key fails the claimed BIP341 NUMS derivation');
+  }
   const borrower = pubkey(p.expectedBorrowerXOnly, 'borrower');
   const guardian = pubkey(p.expectedGuardianXOnly, 'guardian');
   const existing = CANONICAL_DUCAT_COSIGN.exec(p.ducatCosignScriptHex);
@@ -127,7 +157,7 @@ export function constructTwoLeafOptionVault(p: OptionVaultProposal): FullTwoLeaf
     optionLeafHash: b.toString('hex'),
     cosignControlBlockHex: Buffer.concat([prefix, b]).toString('hex'),
     optionControlBlockHex: Buffer.concat([prefix, a]).toString('hex'),
-    keyPathSpendability: 'unproven',
+    keyPathSpendability: p.numsBlindingScalarHex === undefined ? 'unproven' : 'nums-derived',
     cetEnforcement: 'unimplemented',
   };
 }
