@@ -37,5 +37,5 @@ jobs:
         run: npm ci
       - name: Typecheck and compile DLC verifier
         run: npm run build
-      - name: Run Ducat option Vitest regression
-        run: npm test -- --run tests/ducat-option.test.ts tests/ducat-option-vault-tree.test.ts tests/ducat-option-cet-policy.test.ts
+      - name: Run complete DLC verifier regression suite
+        run: npm test
