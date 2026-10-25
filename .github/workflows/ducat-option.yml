@@ -23,3 +23,17 @@ jobs:
         run: cp src/ducat-option.ts src/ducat-option.mts
       - name: Verify candidate leaf and funded scenario invariants
         run: node --experimental-strip-types --test tests/ducat-option.offline.cjs
+
+  package-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck and compile DLC verifier
+        run: npm run build
+      - name: Run Ducat option Vitest regression
+        run: npm test -- --run tests/ducat-option.test.ts
