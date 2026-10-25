@@ -1,0 +1,23 @@
+name: Ducat DLC option research checks
+
+on:
+  pull_request:
+    paths:
+      - 'src/ducat-option.ts'
+      - 'tests/ducat-option.*'
+      - '.github/workflows/ducat-option.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-option-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify candidate leaf and funded scenario invariants
+        run: node --experimental-strip-types --test tests/ducat-option.offline.cjs
