@@ -1,7 +1,7 @@
 /* Node 22+ --experimental-strip-types; independently runnable without node_modules. */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const o = require('../src/ducat-option.ts');
+const o = require('../src/ducat-option.mts');
 const t = {
  network:'mutinynet',vaultOutpoint:'a'.repeat(64)+':0',
  borrowerCollateralSats:'100000000',writerBondSats:'80000000',
