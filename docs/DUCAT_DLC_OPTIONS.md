@@ -36,6 +36,48 @@ The leaf alone enforces only signer concurrence. It does not enforce output amou
 
 A Taproot output key commits the complete script tree. New leaves require an opt-in new/refinanced vault UTXO; confirmed vaults cannot acquire extra spending leaves in place.
 
+
+## Offline acceptance layer (added after the initial prototype)
+
+### Exact proposed vault tree
+
+The file src/ducat-option-vault-tree.ts builds a **new**, opt-in two-leaf BIP341 output:
+
+- Existing Ducat borrower + Guardian CHECKSIGVERIFY/CHECKSIG leaf, in its strict canonical shape.
+- Candidate three-signature borrower + Guardian + option-writer leaf.
+
+The code derives their TapLeaf hashes, lexicographically sorted TapBranch root, BIP341 TapTweak output key, and both 65-byte control blocks. It compares that **entire** proposed tree to a candidate funding P2TR scriptPubKey and both witnesses. Unlisted unilateral liquidation leaves change the root and fail this comparison.
+
+Key-path bypass matters. BIP341 specifies an independently constructed NUMS point H whose x coordinate is SHA256(uncompressed secp256k1 generator G), namely:
+
+    50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0
+
+The reviewer supplies the scalar r and the claimed internal key x(H+rG). The adapter verifies this derivation with the project's existing secp256k1 package. This supports a claim of unknown discrete log under the hardness assumption, without mathematically proving it. A plain internal key without a valid witness retains an explicit unproven key-path status.
+
+### Exact unsigned CET payout preflight
+
+The file src/ducat-option-cet-policy.ts parses Bitcoin transaction bytes with bitcoinjs-lib and enforces:
+
+- The complete two-leaf NUMS tree matches the pledged BTC output script.
+- Both funding outpoints have the exact pinned txid/vout and spend order.
+- Every outcome in the finite enumerated domain has one version-2 unsigned CET with exact mature nLockTime and nonfinal input sequences.
+- Each output uses a valid P2TR x-only curve key and pays precisely the model's satoshi amount to its unique declared recipient, in role order. A zero payout omits its output, and any nonzero payout must meet the conservative 546-sat dust floor.
+- The four recipients' outputs and miner fee exactly conserve the specified BTC collateral and writer bond, with no extra outputs.
+- The returned review digest binds the terms, claimed funding scripts, published tree, and the actual CET txids. It is merely a review commitment and requires an independent signature/authentication layer.
+
+The model enforces USD-linked debt using BTC amounts computed at oracle outcomes. If underlying stablecoins lose their peg, the economic interpretation changes. Every signed oracle outcome must be independently authenticated against its signed event announcement before accepting this enumeration as complete.
+
+**Critical omissions even after preflight passes:** actual on-chain unspent proofs, valid Schnorr adaptor signatures and refund signatures, a full writer-bond spending policy, oracle authenticity, a synchronization/atomicity proof between BTC settlement and UNIT debt burn, and the collateral right to reclaim any residual equity. The existing Ducat validator may reject the proposed transaction flow. The existing Snap correctly refuses this new leaf until a separately reviewed feature is implemented.
+
+To test:
+
+    npm ci
+    npm run build
+    npm test -- --run tests/ducat-option.test.ts tests/ducat-option-vault-tree.test.ts tests/ducat-option-cet-policy.test.ts
+    node --experimental-strip-types --test tests/ducat-option.offline.cjs
+
+The Node-only check requires a temporary ES module copy of src/ducat-option.ts into src/ducat-option.mts; this is created by the GitHub Actions workflow.
+
 ## Porting checkpoints
 
 1. Acquire the private Ducat guardian, validator, tree-construction and transaction-acceptance sources. Pin their actual revisions and work on regtest or Mutinynet.
@@ -61,6 +103,6 @@ The barzakh comparator uses a predefined trace projection of ownership, debts, c
 
     npm ci
     npm run build
-    npm test -- --run tests/ducat-option.test.ts
+    npm test -- --run tests/ducat-option.test.ts tests/ducat-option-vault-tree.test.ts tests/ducat-option-cet-policy.test.ts
 
-The source adds no runtime package dependency. Passing tests verifies arithmetic and a candidate script encoding only. Oracle authenticity, adaptor cryptography, option premium payment, collateral recovery on actual Bitcoin, Runes/UNIT burn, production integration and juristic approval remain open.
+The source adds no runtime package dependency. Passing tests verifies exact arithmetic, a proposed Taproot script tree, and unsigned CET output preflight. Oracle authenticity, adaptor cryptography, option premium payment, collateral recovery on actual Bitcoin, Runes/UNIT burn, production integration and juristic approval remain open.
