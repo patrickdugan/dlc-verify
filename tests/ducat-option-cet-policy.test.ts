@@ -135,7 +135,7 @@ describe('Ducat option CET output allocation preflight',()=>{
     const b=bundle();b.writerBondOutpoint=terms.vaultOutpoint;
     expect(preflightOptionCets(b).problems.join(' ')).toMatch(/cannot share/u);
     const c=bundle();c.vaultPrevoutScriptPubKeyHex='0014'+'f'.repeat(40);
-    expect(preflightOptionCets(c).problems.join(' ')).toMatch(/P2TR/u);
+    expect(preflightOptionCets(c).problems.join(' ')).toMatch(/differs from reviewed option tree/u);
   });
   it('rejects unsigned CETs without an independently derived NUMS key',()=>{
     const b=bundle();
