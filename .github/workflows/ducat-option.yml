@@ -19,5 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Prepare temporary ES module from canonical TypeScript source
+        run: cp src/ducat-option.ts src/ducat-option.mts
       - name: Verify candidate leaf and funded scenario invariants
         run: node --experimental-strip-types --test tests/ducat-option.offline.cjs
