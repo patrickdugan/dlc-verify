@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  analyzeOptions, constructOptionLeaf, firstRightsDifference,
+  analyzeOptions, constructOptionLeaf, firstRightsDifference, minimumPutFundedPriceUsdCents,
   matchOptionLeaf, payoutAt, screenFiqh, type OptionTerms,
   type RightsObservation,
 } from '../src/ducat-option';
@@ -47,6 +47,13 @@ describe('Ducat research-only DLC collar adapter',()=>{
       expect(o.lenderShortfallSats).toBe('0');
     }
     expect(payoutAt(t,'4000000').borrowerEquitySats).toBe('50000000');
+  });
+  it('reports the exact funded BTC put boundary with no unmodeled tail coverage',()=>{
+    expect(minimumPutFundedPriceUsdCents(t)).toBe('3888911');
+    const a=analyzeOptions(t);
+    expect(a.minimumPutFundedPriceUsdCents).toBe('3888911');
+    expect(()=>payoutAt(t,'3888910')).toThrow(/underfunded put/u);
+    expect(()=>payoutAt(t,'3888911')).not.toThrow();
   });
   it('rejects the unfunded low-price tail',()=>{
     const r=analyzeOptions({...t,oracleOutcomesUsdCents:['1000000','4000000']});
