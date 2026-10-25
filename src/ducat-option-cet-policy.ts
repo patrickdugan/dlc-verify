@@ -13,6 +13,7 @@ const TX_HEX = /^(?:[0-9a-f]{2})+$/u;
 const OUTPOINT = /^([0-9a-f]{64}):((?:0|[1-9][0-9]*))$/u;
 const NONFINAL_LOCKTIME_SEQUENCE = 0xfffffffe;
 const MIN_RELAY_OUTPUT = 546n;
+const secp = require('secp256k1') as { publicKeyVerify: (point: Uint8Array) => boolean };
 
 type Role = 'lender' | 'borrower' | 'putWriter' | 'callHolder';
 const ROLES: readonly Role[] = ['lender', 'borrower', 'putWriter', 'callHolder'];
@@ -53,6 +54,9 @@ function txOutpoint(input: Transaction['ins'][number]): string {
 }
 function assertScript(raw: string, name: string): void {
   if (!P2TR.test(raw)) throw Error(name + ': only canonical P2TR scripts accepted');
+  if (!secp.publicKeyVerify(Buffer.from('02' + raw.slice(4), 'hex'))) {
+    throw Error(name + ': invalid x-only secp256k1 public key');
+  }
 }
 function validateCandidates(b: OptionCetBundle): { txids: string[] } {
   const check = analyzeOptions(b.terms);
