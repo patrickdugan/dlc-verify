@@ -39,6 +39,8 @@ export type Analysis = {
   status: 'research-only';
   errors: string[];
   outcomes: OutcomeAllocation[];
+  /** Minimum oracle BTC/USD price insured by the finite BTC writer bond. */
+  minimumPutFundedPriceUsdCents: string | null;
   arithmeticReady: boolean;
   unresolvedPrerequisites: string[];
 };
@@ -54,6 +56,22 @@ function ceilDiv(a: bigint, b: bigint): bigint {
   return (a + b - 1n) / b;
 }
 function maximum(a: bigint, b: bigint): bigint { return a > b ? a : b; }
+
+/**
+ * Sharp BTC-only put-writer solvency bound, rounded up to USD cents:
+ *     ceil(putStrikeCents * collateralSats / (collateralSats + bondSats - feeReserveSats))
+ *
+ * This certifies put coverage only for prices at or ABOVE the bound, not
+ * unrestricted Bitcoin price trajectories or oracle attestations.
+ */
+export function minimumPutFundedPriceUsdCents(t: OptionTerms): string {
+  const q = uint(t.borrowerCollateralSats, 'borrowerCollateralSats');
+  const b = uint(t.writerBondSats, 'writerBondSats');
+  const f = uint(t.minerFeeSats, 'minerFeeSats', true);
+  const put = uint(t.putStrikeUsdCents, 'putStrikeUsdCents');
+  if (q > MAX_SATS || b > MAX_SATS || f > b) throw Error('invalid collateral and writer bond');
+  return ceilDiv(put * q, q + b - f).toString();
+}
 
 /** USD-cent price outcomes are converted to Bitcoin satoshi obligations. */
 export function payoutAt(t: OptionTerms, price: string): OutcomeAllocation {
@@ -91,6 +109,9 @@ export function payoutAt(t: OptionTerms, price: string): OutcomeAllocation {
 export function analyzeOptions(t: OptionTerms): Analysis {
   const errors: string[] = [];
   const outcomes: OutcomeAllocation[] = [];
+  let minimumPutPrice: string | null = null;
+  try { minimumPutPrice = minimumPutFundedPriceUsdCents(t); }
+  catch (error) { errors.push(error instanceof Error ? error.message : 'invalid put solvency bound'); }
   if (!/^[0-9a-fA-F]{64}:[0-9]+$/u.test(t.vaultOutpoint)) errors.push('invalid vault outpoint');
   if (!HEX32.test(t.oracleXOnlyPubkey)) errors.push('invalid oracle key');
   if (!t.eventId || t.eventId.length > 160 || !/^[A-Za-z0-9._:/-]+$/u.test(t.eventId)) errors.push('invalid oracle event');
@@ -115,7 +136,9 @@ export function analyzeOptions(t: OptionTerms): Analysis {
     }
   }
   return {
-    status:'research-only', errors, outcomes, arithmeticReady: errors.length === 0,
+    status:'research-only', errors, outcomes,
+    minimumPutFundedPriceUsdCents: minimumPutPrice,
+    arithmeticReady: errors.length === 0,
     unresolvedPrerequisites: [
       'Ducat guardian and validator recognize funded option transitions',
       'Complete signed oracle event descriptor and announcement',
