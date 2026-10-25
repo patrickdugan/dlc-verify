@@ -24,6 +24,13 @@ For underlying q satoshis, put strike K and oracle price S in equal monetary uni
 
 The BTC obligation becomes unbounded as S approaches zero. A finite BTC-only bond cannot guarantee all price outcomes. The prototype checks a supplied outcome list; that list is not authenticated against an actual oracle event descriptor.
 
+The module now computes an exact fundability floor for a BTC-only put-writer bond. With q BTC sats, put strike K in USD cents, writer bond b sats, and reserved miner fee f sats:
+
+    S_min_cents = ceil(K_cents * q_sats / (q_sats + b_sats - f_sats))
+
+For the example q=100,000,000 sats, K=$70,000, b=80,000,000 sats, and f=1,000 sats, the minimum funded oracle price is **$38,889.11**. At $38,889.10 the exact model rejects the put as underfunded. This floor is conditional on the actual bond remaining exclusively encumbered, with no competing claims, and a valid oracle price domain. The cap on bond financing offers an engineering reason to compare USD-denominated or externally hedged put collateral against a BTC-only bond.
+
+
 ## Candidate Taproot leaf
 
 The exported leaf builder produces a BIP341 TapLeaf hash for this three-signature script:
