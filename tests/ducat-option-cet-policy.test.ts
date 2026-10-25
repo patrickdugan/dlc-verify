@@ -11,11 +11,20 @@ const terms:OptionTerms = {
   minerFeeSats:'1000',eventId:'ducat-collar-maturity-100000',
   oracleXOnlyPubkey:'d'.repeat(64),expiryHeight:100000,refundHeight:100010,
 };
+// Deterministic known-secret test keys. NEVER use as funded Bitcoin keys.
+const secp = require('secp256k1') as {
+  publicKeyCreate: (privateKey: Uint8Array, compressed?: boolean) => Uint8Array;
+};
+function spk(lastByte: number): string {
+  const key = Buffer.alloc(32);
+  key[31] = lastByte;
+  return '5120' + Buffer.from(secp.publicKeyCreate(key, true)).subarray(1).toString('hex');
+}
 const payoutScripts = {
-  lender:'5120'+'1'.repeat(64),
-  borrower:'5120'+'2'.repeat(64),
-  putWriter:'5120'+'3'.repeat(64),
-  callHolder:'5120'+'4'.repeat(64),
+  lender: spk(1),
+  borrower: spk(2),
+  putWriter: spk(3),
+  callHolder: spk(4),
 };
 const bondOutpoint = 'b'.repeat(64)+':1';
 function buildOne(price:string, mods?:{
@@ -40,18 +49,18 @@ function buildOne(price:string, mods?:{
   (['lender','borrower','putWriter','callHolder'] as const).forEach(role=>{
     const v=out[role];
     if(v>0n)tx.addOutput(Buffer.from(
-      mods?.changeRecipient&&role==='borrower'?'5120'+'f'.repeat(64):payoutScripts[role],'hex'
+      mods?.changeRecipient&&role==='borrower'?spk(8):payoutScripts[role],'hex'
     ),v+(mods?.overpay&&role==='borrower'?1n:0n));
   });
-  if(mods?.addOutput)tx.addOutput(Buffer.from('5120'+'f'.repeat(64),'hex'),1000n);
+  if(mods?.addOutput)tx.addOutput(Buffer.from(spk(9),'hex'),1000n);
   return {outcomeUsdCents:price,unsignedTransactionHex:tx.toHex()};
 }
 function bundle():OptionCetBundle {
   return {
     terms,writerBondOutpoint:bondOutpoint,
-    vaultPrevoutScriptPubKeyHex:'5120'+'a'.repeat(64),
-    writerBondPrevoutScriptPubKeyHex:'5120'+'b'.repeat(64),
-    payoutScripts,
+    vaultPrevoutScriptPubKeyHex:spk(5),
+    writerBondPrevoutScriptPubKeyHex:spk(6),
+    payoutScripts:{...payoutScripts},
     candidates:terms.oracleOutcomesUsdCents.map(price=>buildOne(price)),
   };
 }
@@ -106,7 +115,7 @@ describe('Ducat option CET output allocation preflight',()=>{
   it('updates the review digest when a legitimate recipient changes',()=>{
     const b=bundle();
     const a=preflightOptionCets(b).reviewDigest;
-    b.payoutScripts.borrower='5120'+'e'.repeat(64);
+    b.payoutScripts.borrower=spk(7);
     b.candidates=terms.oracleOutcomesUsdCents.map(p=>{
       const tx=Transaction.fromHex(buildOne(p).unsignedTransactionHex);
       const paid = payoutAt(terms,p);
