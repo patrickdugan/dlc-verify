@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/ducat-option.ts'
+      - 'src/ducat-option-vault-tree.ts'
       - 'tests/ducat-option.*'
       - '.github/workflows/ducat-option.yml'
   workflow_dispatch:
@@ -36,4 +37,4 @@ jobs:
       - name: Typecheck and compile DLC verifier
         run: npm run build
       - name: Run Ducat option Vitest regression
-        run: npm test -- --run tests/ducat-option.test.ts
+        run: npm test -- --run tests/ducat-option.test.ts tests/ducat-option-vault-tree.test.ts
