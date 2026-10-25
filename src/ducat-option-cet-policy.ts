@@ -7,6 +7,9 @@
 import { createHash } from 'node:crypto';
 import { Transaction } from 'bitcoinjs-lib';
 import { analyzeOptions, payoutAt, type OptionTerms } from './ducat-option';
+import {
+  verifyTwoLeafOptionVault, type OptionVaultProposal, type ObservedOptionVault,
+} from './ducat-option-vault-tree';
 
 const P2TR = /^5120[0-9a-f]{64}$/u;
 const TX_HEX = /^(?:[0-9a-f]{2})+$/u;
@@ -25,6 +28,10 @@ export type OptionCetCandidate = {
 export type OptionCetBundle = {
   terms: OptionTerms;
   writerBondOutpoint: string;
+  /** Full proposed tree with an independently reviewable BIP341 NUMS witness. */
+  proposedTree: OptionVaultProposal;
+  /** Actual candidate scriptPubKey and both control blocks to be verified. */
+  observedTree: ObservedOptionVault;
   /** Must be checked against the actual chain independently. */
   vaultPrevoutScriptPubKeyHex: string;
   /** Must be checked against the actual chain independently. */
@@ -61,6 +68,16 @@ function assertScript(raw: string, name: string): void {
 function validateCandidates(b: OptionCetBundle): { txids: string[] } {
   const check = analyzeOptions(b.terms);
   if (!check.arithmeticReady) throw Error('financial allocation: ' + check.errors.join('; '));
+  const tree = verifyTwoLeafOptionVault(b.proposedTree, b.observedTree);
+  if (tree.status !== 'matches-proposed-tree' || !tree.manifest) {
+    throw Error('vault Taproot tree commitment mismatch: ' + tree.reasons.join('; '));
+  }
+  if (tree.manifest.keyPathSpendability !== 'nums-derived') {
+    throw Error('missing independently verifiable BIP341 NUMS internal-key witness');
+  }
+  if (tree.manifest.scriptPubKeyHex !== b.vaultPrevoutScriptPubKeyHex) {
+    throw Error('CET vault funding script differs from reviewed option tree');
+  }
   const vault = splitOutpoint(b.terms.vaultOutpoint);
   const writer = splitOutpoint(b.writerBondOutpoint);
   if (b.terms.vaultOutpoint === b.writerBondOutpoint) {
@@ -152,7 +169,7 @@ export function preflightOptionCets(bundle: OptionCetBundle): CetPreflightResult
     'prove the writer bond is encumbered until valid CET or refund settlement',
     'obtain signed oracle announcement binding every allowed outcome and expiry',
     'verify all Schnorr/adaptor signatures on each actual Taproot CET and refund',
-    'bind a completed two-leaf NUMS output tree and prevent legacy liquidation',
+    'authenticate confirmed on-chain vault output against reviewed NUMS tree and forbid any legacy liquidation path',
     'bind UNIT burn/debt discharge and the lender claim to the same settlement',
     'review option-premium settlement and qard/murabaha legal characterization',
   ];
@@ -163,6 +180,13 @@ export function preflightOptionCets(bundle: OptionCetBundle): CetPreflightResult
     const committed = {
       domain: 'ducat-research-cet-policy/v1',
       terms: bundle.terms,
+      approvedTree: {
+        scriptPubKeyHex: bundle.observedTree.scriptPubKeyHex,
+        internalKeyXOnly: bundle.proposedTree.internalKeyXOnly,
+        numsBlindingScalarHex: bundle.proposedTree.numsBlindingScalarHex,
+        cosignControlBlockHex: bundle.observedTree.cosignControlBlockHex,
+        optionControlBlockHex: bundle.observedTree.optionControlBlockHex,
+      },
       writerBondOutpoint: bundle.writerBondOutpoint,
       vaultPrevoutScriptPubKeyHex: bundle.vaultPrevoutScriptPubKeyHex,
       writerBondPrevoutScriptPubKeyHex: bundle.writerBondPrevoutScriptPubKeyHex,
