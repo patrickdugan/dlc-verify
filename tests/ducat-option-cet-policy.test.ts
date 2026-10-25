@@ -1,0 +1,122 @@
+import { describe, expect, it } from 'vitest';
+import { Transaction } from 'bitcoinjs-lib';
+import { payoutAt, type OptionTerms } from '../src/ducat-option';
+import { preflightOptionCets, type OptionCetBundle } from '../src/ducat-option-cet-policy';
+
+const terms:OptionTerms = {
+  network:'mutinynet',vaultOutpoint:'a'.repeat(64)+':0',
+  borrowerCollateralSats:'100000000',writerBondSats:'80000000',
+  debtUsdCents:'5000000',putStrikeUsdCents:'7000000',callStrikeUsdCents:'16600000',
+  oracleOutcomesUsdCents:['4000000','7000000','10000000','20000000'],
+  minerFeeSats:'1000',eventId:'ducat-collar-maturity-100000',
+  oracleXOnlyPubkey:'d'.repeat(64),expiryHeight:100000,refundHeight:100010,
+};
+const payoutScripts = {
+  lender:'5120'+'1'.repeat(64),
+  borrower:'5120'+'2'.repeat(64),
+  putWriter:'5120'+'3'.repeat(64),
+  callHolder:'5120'+'4'.repeat(64),
+};
+const bondOutpoint = 'b'.repeat(64)+':1';
+function buildOne(price:string, mods?:{
+  changeRecipient?:boolean;swapInputs?:boolean;locktime?:number;
+  overpay?:boolean;addOutput?:boolean;badSequence?:boolean;
+}) {
+  const tx = new Transaction();
+  tx.version = 2;
+  tx.locktime = mods?.locktime ?? terms.expiryHeight;
+  const inputVault: [Buffer,number,number]=[Buffer.from('a'.repeat(64),'hex').reverse(),0,0xfffffffe];
+  const inputWriter: [Buffer,number,number]=[Buffer.from('b'.repeat(64),'hex').reverse(),1,mods?.badSequence?0xffffffff:0xfffffffe];
+  if(mods?.swapInputs) {
+    tx.addInput(...inputWriter);tx.addInput(...inputVault);
+  } else {
+    tx.addInput(...inputVault);tx.addInput(...inputWriter);
+  }
+  const pay = payoutAt(terms,price);
+  const out = {
+    lender:BigInt(pay.lenderSats),borrower:BigInt(pay.borrowerEquitySats),
+    putWriter:BigInt(pay.writerRefundSats),callHolder:BigInt(pay.callHolderSats)
+  };
+  (['lender','borrower','putWriter','callHolder'] as const).forEach(role=>{
+    const v=out[role];
+    if(v>0n)tx.addOutput(Buffer.from(
+      mods?.changeRecipient&&role==='borrower'?'5120'+'f'.repeat(64):payoutScripts[role],'hex'
+    ),v+(mods?.overpay&&role==='borrower'?1n:0n));
+  });
+  if(mods?.addOutput)tx.addOutput(Buffer.from('5120'+'f'.repeat(64),'hex'),1000n);
+  return {outcomeUsdCents:price,unsignedTransactionHex:tx.toHex()};
+}
+function bundle():OptionCetBundle {
+  return {
+    terms,writerBondOutpoint:bondOutpoint,
+    vaultPrevoutScriptPubKeyHex:'5120'+'a'.repeat(64),
+    writerBondPrevoutScriptPubKeyHex:'5120'+'b'.repeat(64),
+    payoutScripts,
+    candidates:terms.oracleOutcomesUsdCents.map(price=>buildOne(price)),
+  };
+}
+describe('Ducat option CET output allocation preflight',()=>{
+  it('checks every unsigned Bitcoin transaction and produces reproducible digest',()=>{
+    const b=bundle();
+    const r=preflightOptionCets(b);
+    expect(r.status).toBe('preflight-pass');
+    expect(r.authorization).toBe('not-authorized');
+    expect(r.cetTxids).toHaveLength(4);
+    expect(r.reviewDigest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(preflightOptionCets(b).reviewDigest).toBe(r.reviewDigest);
+    expect(r.unsatisfied.join(' ')).toMatch(/oracle announcement/u);
+  });
+  it('rejects a substituted borrower payout address',()=>{
+    const b=bundle();
+    b.candidates[1]=buildOne(b.candidates[1].outcomeUsdCents,{changeRecipient:true});
+    expect(preflightOptionCets(b).problems).toContain('CET payout mismatch at outcome 7000000, index 1');
+  });
+  it('rejects a single satoshi overpayment',()=>{
+    const b=bundle();b.candidates[0]=buildOne('4000000',{overpay:true});
+    expect(preflightOptionCets(b).status).toBe('reject');
+  });
+  it('rejects change of input spending priority and nSequence',()=>{
+    const b=bundle();b.candidates[0]=buildOne('4000000',{swapInputs:true});
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/CET funding inputs/u);
+    const c=bundle();c.candidates[0]=buildOne('4000000',{badSequence:true});
+    expect(preflightOptionCets(c).status).toBe('reject');
+  });
+  it('rejects early/late locktimes',()=>{
+    const b=bundle();b.candidates[0]=buildOne('4000000',{locktime:terms.expiryHeight+1});
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/maturity locktime/u);
+  });
+  it('rejects extra outputs and reused recipient scripts',()=>{
+    const b=bundle();b.candidates[0]=buildOne('4000000',{addOutput:true});
+    expect(preflightOptionCets(b).status).toBe('reject');
+    const c=bundle();c.payoutScripts.borrower=c.payoutScripts.lender;
+    expect(preflightOptionCets(c).problems.join(' ')).toMatch(/distinct Bitcoin scripts/u);
+  });
+  it('rejects omitted or duplicate oracle outcomes',()=>{
+    const b=bundle();b.candidates.pop();
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/missing or extra/u);
+    const c=bundle();c.candidates[1].outcomeUsdCents='4000000';
+    expect(preflightOptionCets(c).status).toBe('reject');
+  });
+  it('rejects unbound or duplicate collateral UTXOs',()=>{
+    const b=bundle();b.writerBondOutpoint=terms.vaultOutpoint;
+    expect(preflightOptionCets(b).problems.join(' ')).toMatch(/cannot share/u);
+    const c=bundle();c.vaultPrevoutScriptPubKeyHex='0014'+'f'.repeat(40);
+    expect(preflightOptionCets(c).problems.join(' ')).toMatch(/P2TR/u);
+  });
+  it('updates the review digest when a legitimate recipient changes',()=>{
+    const b=bundle();
+    const a=preflightOptionCets(b).reviewDigest;
+    b.payoutScripts.borrower='5120'+'e'.repeat(64);
+    b.candidates=terms.oracleOutcomesUsdCents.map(p=>{
+      const tx=Transaction.fromHex(buildOne(p).unsignedTransactionHex);
+      const paid = payoutAt(terms,p);
+      // Role order lender, borrower, writer, holder. Borrower is always positive here.
+      expect(paid.borrowerEquitySats).not.toBe('0');
+      tx.outs[1].script=Buffer.from(b.payoutScripts.borrower,'hex');
+      return {outcomeUsdCents:p,unsignedTransactionHex:tx.toHex()};
+    });
+    const after=preflightOptionCets(b);
+    expect(after.status).toBe('preflight-pass');
+    expect(after.reviewDigest).not.toBe(a);
+  });
+});
